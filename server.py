@@ -11,16 +11,20 @@ mcp = FastMCP("LexiBridge")
 
 
 @mcp.tool()
-def search_legal_vault(query: str, max_results: int = 4) -> str:
+async def search_legal_vault(query: str, max_results: int = 4) -> str:
     """
     Semantically search the firm's legal vault (contract clauses, precedent
     language, and prior work product) for passages relevant to `query`.
+
+    The query is embedded on-device and only the vector is sent to the
+    cloud bridge for matching; the actual clause text is re-hydrated from
+    the local vector store, so raw text never leaves this machine.
 
     Returns a JSON list of {source_document, page, text_content, relevance_score}.
     Use this before drafting to ground new language in existing precedent.
     """
     try:
-        results = vault.search_clauses(query, max_results=max_results)
+        results = await vault.search_clauses(query, max_results=max_results)
         return json.dumps(results, indent=2)
     except Exception as e:
         return f"Vault search error: {e}"

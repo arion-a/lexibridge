@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Local legal vault + its computed embeddings — contains raw client text
+# and must never be committed or pushed to the cloud (see SPECIFICATION.md).
+legal_vault/
+my_manual_vector.json
