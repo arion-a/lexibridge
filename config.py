@@ -4,7 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Anthropic — powers clause/memo drafting and summarization
+# Anthropic — powers clause/memo drafting and summarization. These are only
+# fallback defaults: each drafting tool call can pass its own `api_key` /
+# `model` to use a different Anthropic account or Claude model, so these
+# can be left unset if every caller supplies their own.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 
