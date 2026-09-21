@@ -47,19 +47,17 @@ English and Hindi text.
 
 - `search_legal_vault(query, max_results=4)` — semantic search over the
   legal vault, as described above.
-- `draft_clause(instruction, clause_type, tone, reference_text, api_key, model)`
-  — drafts a single contract clause with an LLM, optionally grounded in
-  retrieved precedent.
-- `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context, api_key, model)`
+- `configure_llm(api_key, model="")` — set which Anthropic API key (and
+  optionally which Claude model) the three drafting tools below use for the
+  rest of the session. Call it once; see **Bring your own key** below.
+- `draft_clause(instruction, clause_type, tone, reference_text)` — drafts a
+  single contract clause with an LLM, optionally grounded in retrieved
+  precedent.
+- `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context)`
   — drafts a structured legal research memo (Question Presented, Brief
   Answer, Facts, Discussion, Conclusion).
-- `summarize_document(document_text, focus, api_key, model)` — summarizes a
-  legal document, flagging obligations, deadlines, and risks.
-
-All three drafting tools take optional `api_key` / `model` arguments so a
-caller can use their own Anthropic account and choice of Claude model
-per call, instead of the server's fixed default — see **Bring your own
-key** below.
+- `summarize_document(document_text, focus)` — summarizes a legal document,
+  flagging obligations, deadlines, and risks.
 
 A typical flow: an MCP client calls `search_legal_vault` to pull relevant
 precedent, then feeds the results into `draft_clause` or `draft_legal_memo`
@@ -68,33 +66,32 @@ in the firm's own prior work.
 
 ## Bring your own key
 
-`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` in `.env` are only a **fallback**
-used when a tool call doesn't supply its own. Any MCP client can override
-both per call:
+`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` in `.env` are only a **fallback**,
+used until `configure_llm` is called. Call it once, with whatever key and
+model you want the rest of the session to use:
 
 ```json
-{
-  "instruction": "Add a mutual confidentiality clause covering trade secrets",
-  "clause_type": "confidentiality",
-  "api_key": "sk-ant-...",
-  "model": "claude-opus-5"
-}
+{ "api_key": "sk-ant-...", "model": "claude-opus-5" }
 ```
 
-If neither the call nor the server's `.env` has a key, the tool returns a
-clear error rather than failing silently. Because the key travels as a
-plain tool argument, only pass a personal key over a transport you trust
-(local stdio, or an authenticated HTTPS MCP endpoint) — it is not encrypted
-or persisted by this server beyond the in-memory client cache in `llm.py`.
+`model` is optional — omit it to keep the server's default model while
+still switching to your own key. After that, `draft_clause`,
+`draft_legal_memo`, and `summarize_document` all use it automatically; no
+need to pass a key to each one. If neither `configure_llm` nor the
+server's `.env` has a key, a drafting tool returns a clear error rather
+than failing silently. Because the key travels as a plain tool argument,
+only call `configure_llm` over a transport you trust (local stdio, or an
+authenticated HTTPS MCP endpoint) — it is held in memory for the session,
+not written to disk.
 
 ## Setup
 
 1. `pip install -r requirements.txt`
 2. Copy `.env.example` to `.env`. `ANTHROPIC_API_KEY` can be left blank if
-   every caller will pass its own `api_key` (see above); otherwise fill it
-   in as the server-wide default. Fill in `PINECONE_API_KEY` (plus your
-   Pinecone index name, if it differs from the default).
-   `EMBEDDING_MODEL` has a working default and needs no key.
+   you'll call `configure_llm` with your own key instead (see above);
+   otherwise fill it in as the server-wide default. Fill in
+   `PINECONE_API_KEY` (plus your Pinecone index name, if it differs from
+   the default). `EMBEDDING_MODEL` has a working default and needs no key.
 3. Deploy `server_cloud.py` (e.g. to Railway — a `Procfile` is included) and
    set `CLOUD_SERVER_URL` to its `/mcp` endpoint.
 4. Point `LEGAL_VAULT_DIR` at a local copy of the legal vault, then ingest it:
