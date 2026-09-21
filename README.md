@@ -2,54 +2,33 @@
 
 An MCP (Model Context Protocol) server that speeds up legal research and
 drafting by giving LLM clients (Claude Desktop, Claude Code, etc.) tools to
-search a firm's precedent vault and draft clauses, memos, and summaries.
+search a legal vault and draft clauses, memos, and summaries.
 
-Research is a hybrid local/cloud pipeline designed so raw legal text never
-leaves the local machine (see [SPECIFICATION.md](SPECIFICATION.md)); drafting
-runs on Claude directly. Bilingual: chunking and embedding both handle
-English and Hindi text.
+Runs as a single container, deployed to the cloud (Railway) — embedding,
+vault storage/search, and drafting all happen inside that one process.
+There is no local machine or repo checkout required to use it day to day:
+connect an MCP client to the deployed URL and call its tools directly.
 
-## Architecture
-
-```
- local machine                                    cloud (e.g. Railway)
- ┌───────────────────────────┐                     ┌───────────────────────┐
- │ legal_vault/ (synced       │                     │                       │
- │ Google Drive folder)       │                     │                       │
- │        │ embed_offline.py  │                     │                       │
- │        ▼ (ONNX MiniLM,     │   vectors only,     │  server_cloud.py      │
- │ my_manual_vector.json ─────┼── no text ─────────▶│  (query_vault_with_   │
- │ (id, text, vector — local  │                     │   precomputed_vector) │
- │  only, gitignored)         │                     │        │              │
- │                            │                     │        ▼              │
- │ server.py (search_legal_   │   query vector ────▶│  Pinecone Serverless  │
- │  vault, draft_clause,      │◀── ids + scores ─────  (legal-vault-index)  │
- │  draft_legal_memo,         │                     │                       │
- │  summarize_document)       │                     │                       │
- └───────────────────────────┘                     └───────────────────────┘
-```
-
-- **`embed_offline.py`** chunks documents from a local legal vault directory
-  (a Google Drive Desktop / rclone sync works) and computes 384-dim
-  embeddings entirely on-device with an ONNX multilingual MiniLM model — no
-  API key, no network call to embed. Results go to `my_manual_vector.json`
-  (local only). `--push` additionally upserts *vectors plus a filename/page
-  locator, never the text itself* to Pinecone.
-- **`server_cloud.py`** is the only thing deployed to the cloud. It exposes
-  one tool, `query_vault_with_precomputed_vector`, which takes a vector and
-  returns matching ids/scores from Pinecone — it never embeds anything and
-  never stores or returns document text.
-- **`vault.py`** (used by the local `search_legal_vault` tool) embeds the
-  query locally, sends only the vector to `server_cloud.py`, and re-hydrates
-  the matched clause text from the local `my_manual_vector.json` by id.
+**Note on `SPECIFICATION.md`:** that document describes a different design
+— local on-device embedding with only vectors crossing to a cloud vector
+store, so raw text never leaves your machine. This deployment deliberately
+collapses that into one cloud container instead (by explicit choice, for
+simplicity of a fully-hosted setup with nothing to install locally). The
+tradeoff: document text now lives in Pinecone, not only on a local
+machine. If you want the original zero-text-exposure design back, say so
+and it can be split apart again.
 
 ## Tools
 
 - `search_legal_vault(query, max_results=4)` — semantic search over the
-  legal vault, as described above.
+  vault for passages relevant to `query`. Returns JSON:
+  `{source_document, page, text_content, relevance_score}`.
+- `ingest_document(source_document, text)` — chunks and embeds `text` and
+  stores it in the vault. This is how you populate the vault: no local
+  files needed, just call this tool with a document's contents.
 - `configure_llm(api_key, model="")` — set which Anthropic API key (and
-  optionally which Claude model) the three drafting tools below use for the
-  rest of the session. Call it once; see **Bring your own key** below.
+  optionally which Claude model) the three drafting tools below use for
+  the rest of this session. See the caution below.
 - `draft_clause(instruction, clause_type, tone, reference_text)` — drafts a
   single contract clause with an LLM, optionally grounded in retrieved
   precedent.
@@ -59,57 +38,71 @@ English and Hindi text.
 - `summarize_document(document_text, focus)` — summarizes a legal document,
   flagging obligations, deadlines, and risks.
 
-A typical flow: an MCP client calls `search_legal_vault` to pull relevant
-precedent, then feeds the results into `draft_clause` or `draft_legal_memo`
-as `reference_text` / `research_context` so the drafted language is grounded
-in the firm's own prior work.
+A typical flow: `ingest_document` to populate the vault, `search_legal_vault`
+to pull relevant precedent, then feed the results into `draft_clause` or
+`draft_legal_memo` as `reference_text` / `research_context` so the drafted
+language is grounded in prior work.
 
-## Bring your own key
+### Caution: `configure_llm` is process-wide, not per-connection
 
-`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` in `.env` are only a **fallback**,
-used until `configure_llm` is called. Call it once, with whatever key and
-model you want the rest of the session to use:
+This server runs as one shared container. If more than one MCP client
+connects to the same deployment, `configure_llm` changes the key/model for
+*everyone* currently using that deployment, not just the caller — there is
+no per-user isolation. Fine for a single person's own deployment; not safe
+if you expect multiple people to share one deployed instance concurrently.
+If that's your situation, say so and the drafting tools can go back to
+taking `api_key`/`model` as arguments on every call instead.
 
+## Deploy (Railway)
+
+1. **railway.app** → **New Project → Deploy from GitHub repo** → pick this
+   repo and the branch you're working on. Railway detects the `Dockerfile`
+   and builds it automatically.
+2. In the service's **Variables** tab, add:
+   - `PINECONE_API_KEY`
+   - `PINECONE_INDEX` (defaults to `legal-vault-index` if unset)
+   - `ANTHROPIC_API_KEY` (optional — omit if you'll always call `configure_llm`)
+   - `ANTHROPIC_MODEL` (optional, defaults to `claude-sonnet-5`)
+3. **Settings → Networking → Generate Domain** to get a public URL.
+4. Your MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
+
+You'll also need a Pinecone index: at **app.pinecone.io**, create one with
+**384 dimensions** and **cosine** metric (must match the embedding model).
+
+## Connect an MCP client
+
+For Claude Desktop (or any client supporting remote MCP servers), add:
 ```json
-{ "api_key": "sk-ant-...", "model": "claude-opus-5" }
+{
+  "mcpServers": {
+    "lexibridge": {
+      "url": "https://<your-app>.up.railway.app/mcp"
+    }
+  }
+}
 ```
 
-`model` is optional — omit it to keep the server's default model while
-still switching to your own key. After that, `draft_clause`,
-`draft_legal_memo`, and `summarize_document` all use it automatically; no
-need to pass a key to each one. If neither `configure_llm` nor the
-server's `.env` has a key, a drafting tool returns a clear error rather
-than failing silently. Because the key travels as a plain tool argument,
-only call `configure_llm` over a transport you trust (local stdio, or an
-authenticated HTTPS MCP endpoint) — it is held in memory for the session,
-not written to disk.
+Then call `ingest_document` a few times to populate the vault, and the
+other tools are ready to use.
 
-## Setup
+## Local Docker testing (optional)
 
-1. `pip install -r requirements.txt`
-2. Copy `.env.example` to `.env`. `ANTHROPIC_API_KEY` can be left blank if
-   you'll call `configure_llm` with your own key instead (see above);
-   otherwise fill it in as the server-wide default. Fill in
-   `PINECONE_API_KEY` (plus your Pinecone index name, if it differs from
-   the default). `EMBEDDING_MODEL` has a working default and needs no key.
-3. Deploy `server_cloud.py` (e.g. to Railway — a `Procfile` is included) and
-   set `CLOUD_SERVER_URL` to its `/mcp` endpoint.
-4. Point `LEGAL_VAULT_DIR` at a local copy of the legal vault, then ingest it:
-   ```bash
-   python embed_offline.py --push
-   ```
-5. Run the local server: `python server.py`
-6. Point an MCP client at it, e.g. add to `claude_desktop_config.json`:
-   ```json
-   {
-     "mcpServers": {
-       "lexibridge": {
-         "command": "python",
-         "args": ["/absolute/path/to/lexibridge/server.py"]
-       }
-     }
-   }
-   ```
+```bash
+cp .env.example .env   # fill in PINECONE_API_KEY at minimum
+docker build -t lexibridge .
+docker run --env-file .env -p 8000:8000 lexibridge
+```
+
+## Optional: bulk-ingest a local folder
+
+If you do have a folder of documents on whatever machine you're running
+this from, `embed_offline.py` walks it and calls the same ingestion path
+as `ingest_document`:
+```bash
+python embed_offline.py --vault-dir ./legal_vault
+```
+Not required — most setups can just call the `ingest_document` MCP tool
+directly instead.
 
 **Disclaimer:** output is a drafting aid, not legal advice — a licensed
 attorney should review anything generated here before it's relied on or

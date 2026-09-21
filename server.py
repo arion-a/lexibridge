@@ -1,6 +1,12 @@
-"""LexiBridge: an MCP server for faster legal research and drafting with LLMs."""
+"""LexiBridge: an MCP server for faster legal research and drafting with LLMs.
+
+Runs as a single cloud-deployed container — embedding, vault storage/
+search, and drafting all happen inside this one process. See README.md for
+how this differs from SPECIFICATION.md's original local-embedding split.
+"""
 
 import json
+import os
 
 from fastmcp import FastMCP
 
@@ -11,23 +17,37 @@ mcp = FastMCP("LexiBridge")
 
 
 @mcp.tool()
-async def search_legal_vault(query: str, max_results: int = 4) -> str:
+def search_legal_vault(query: str, max_results: int = 4) -> str:
     """
-    Semantically search the firm's legal vault (contract clauses, precedent
-    language, and prior work product) for passages relevant to `query`.
-
-    The query is embedded on-device and only the vector is sent to the
-    cloud bridge for matching; the actual clause text is re-hydrated from
-    the local vector store, so raw text never leaves this machine.
+    Semantically search the legal vault (contract clauses, precedent
+    language, and prior work product ingested via ingest_document) for
+    passages relevant to `query`.
 
     Returns a JSON list of {source_document, page, text_content, relevance_score}.
     Use this before drafting to ground new language in existing precedent.
     """
     try:
-        results = await vault.search_clauses(query, max_results=max_results)
+        results = vault.search_clauses(query, max_results=max_results)
         return json.dumps(results, indent=2)
     except Exception as e:
         return f"Vault search error: {e}"
+
+
+@mcp.tool()
+def ingest_document(source_document: str, text: str) -> str:
+    """
+    Chunk and embed `text` (e.g. the full contents of a contract or
+    precedent document, named by `source_document`) and store it in the
+    vault for future search_legal_vault calls.
+
+    Runs entirely inside this deployed container — no local files or
+    repository checkout needed to populate the vault.
+    """
+    try:
+        count = vault.ingest_document(source_document, text)
+        return f"Ingested {count} chunk(s) from '{source_document}' into the vault."
+    except Exception as e:
+        return f"Ingestion error: {e}"
 
 
 @mcp.tool()
@@ -35,9 +55,13 @@ def configure_llm(api_key: str, model: str = "") -> str:
     """
     Choose which Anthropic API key and Claude model draft_clause,
     draft_legal_memo, and summarize_document use for the rest of this
-    session. Call this once with your own key to use your own Anthropic
-    account instead of the server's default. `model` is optional — omit it
-    to keep the server's default model.
+    session. `model` is optional — omit it to keep the server's default
+    model.
+
+    Caution: this server runs as a single shared process. If more than one
+    client connects to the same deployment, configure_llm's choice is
+    process-wide, not per-connection — a later call from any client can
+    change which key/model everyone's drafting calls use.
     """
     return llm.configure(api_key, model)
 
@@ -106,4 +130,11 @@ def summarize_document(document_text: str, focus: str = "key obligations, deadli
 
 
 if __name__ == "__main__":
-    mcp.run()
+    port = os.environ.get("PORT")
+    if port:
+        # Deployed (Railway sets PORT): serve MCP over HTTP so remote
+        # clients can connect to https://<app>.up.railway.app/mcp
+        mcp.run(transport="http", host="0.0.0.0", port=int(port))
+    else:
+        # Local dev/testing only: stdio, launched directly by an MCP client.
+        mcp.run()

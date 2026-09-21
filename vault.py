@@ -1,65 +1,70 @@
-"""Legal vault search.
+"""Legal vault: on-device embedding plus Pinecone storage/search, all
+running inside this same deployed container.
 
-Embeds the query locally, asks the remote cloud bridge (server_cloud.py)
-to match it against Pinecone by vector only, then re-hydrates the actual
-clause text from the local vector store built by embed_offline.py — so
-the text a caller reads never had to be stored or transmitted to the
-cloud to get there.
+Note: this collapses the local-machine/cloud-bridge split described in
+SPECIFICATION.md into a single cloud service, by explicit choice — see
+README.md for the tradeoff (document text now lives in Pinecone, not only
+on a local machine).
 """
 
-import json
-from pathlib import Path
-
-from fastmcp import Client
+import uuid
 
 import config
 import embedding
 
-_local_records_by_id = None
+_pc = None
+_index = None
 
 
-def _load_local_records() -> dict:
-    global _local_records_by_id
-    if _local_records_by_id is None:
-        path = Path(config.LOCAL_VECTOR_STORE)
-        if not path.exists():
-            raise RuntimeError(
-                f"{path} not found — run `python embed_offline.py --push` first "
-                "to build the local vault and populate the cloud index."
-            )
-        records = json.loads(path.read_text(encoding="utf-8"))
-        _local_records_by_id = {record["id"]: record for record in records}
-    return _local_records_by_id
+def _get_index():
+    global _pc, _index
+    if _index is None:
+        from pinecone import Pinecone
+
+        if not config.PINECONE_API_KEY:
+            raise RuntimeError("PINECONE_API_KEY is not set")
+        _pc = Pinecone(api_key=config.PINECONE_API_KEY)
+        _index = _pc.Index(config.PINECONE_INDEX)
+    return _index
 
 
-def _parse_matches(result) -> list:
-    content = getattr(result, "data", None)
-    if content is None:
-        content = result.content[0].text
-    return content if isinstance(content, list) else json.loads(content)
+def ingest_chunks(source_document: str, chunks: list) -> int:
+    if not chunks:
+        return 0
+    vectors = embedding.embed_texts(chunks)
+    index = _get_index()
+    upserts = [
+        {
+            "id": str(uuid.uuid4()),
+            "values": vector,
+            "metadata": {"source_document": source_document, "page": page, "text": chunk_text},
+        }
+        for page, (chunk_text, vector) in enumerate(zip(chunks, vectors), start=1)
+    ]
+    batch_size = 100
+    for i in range(0, len(upserts), batch_size):
+        index.upsert(vectors=upserts[i:i + batch_size])
+    return len(upserts)
 
 
-async def search_clauses(query: str, max_results: int = 4) -> list:
-    if not config.CLOUD_SERVER_URL:
-        raise RuntimeError("CLOUD_SERVER_URL is not set")
+def ingest_document(source_document: str, text: str) -> int:
+    import chunking
 
+    return ingest_chunks(source_document, chunking.chunk_document(text))
+
+
+def search_clauses(query: str, max_results: int = 4) -> list:
+    index = _get_index()
     vector = embedding.embed_query(query)
-    local_records = _load_local_records()
-
-    async with Client(config.CLOUD_SERVER_URL) as client:
-        result = await client.call_tool(
-            "query_vault_with_precomputed_vector",
-            {"vector": vector, "top_k": max_results},
-        )
-    matches = _parse_matches(result)
+    raw_response = index.query(vector=vector, top_k=max_results, include_metadata=True)
 
     results = []
-    for match in matches:
-        record = local_records.get(match.get("id"), {})
+    for match in raw_response.get("matches", []):
+        metadata = match.get("metadata", {})
         results.append({
-            "source_document": match.get("source_document", "Unknown File"),
-            "page": match.get("page", 1),
-            "text_content": record.get("text", ""),
+            "source_document": metadata.get("source_document", "Unknown File"),
+            "page": metadata.get("page", 1),
+            "text_content": metadata.get("text", ""),
             "relevance_score": match.get("score"),
         })
     return results

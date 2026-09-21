@@ -4,7 +4,5 @@ __pycache__/
 .venv/
 venv/
 
-# Local legal vault + its computed embeddings — contains raw client text
-# and must never be committed or pushed to the cloud (see SPECIFICATION.md).
+# Only relevant if you use embed_offline.py's optional local bulk-ingest.
 legal_vault/
-my_manual_vector.json
