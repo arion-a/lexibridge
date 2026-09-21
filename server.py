@@ -1,42 +1,84 @@
-# server_cloud.py
-from fastmcp import FastMCP
-from pinecone import Pinecone
+"""LexiBridge: an MCP server for faster legal research and drafting with LLMs."""
+
 import json
 
-# 1. Initialize the Cloud MCP Server
-mcp = FastMCP("LexiBridge-Cloud-Vault")
+from fastmcp import FastMCP
 
-# 2. Connect directly to your cloud hosted database via secure API keys
-pc = Pinecone(api_key="your-pinecone-api-key")
-index = pc.Index("legal-vault-index")
+import llm
+import vault
+
+mcp = FastMCP("LexiBridge")
+
 
 @mcp.tool()
-def search_cloud_vault(query: str, max_results: int = 4) -> str:
+def search_legal_vault(query: str, max_results: int = 4) -> str:
     """
-    Queries the remote enterprise secure cloud vector database 
-    for conceptually matching contract clauses and legal references.
+    Semantically search the firm's legal vault (contract clauses, precedent
+    language, and prior work product) for passages relevant to `query`.
+
+    Returns a JSON list of {source_document, page, text_content, relevance_score}.
+    Use this before drafting to ground new language in existing precedent.
     """
     try:
-        # The database handles the math search on their remote servers
-        raw_response = index.query(
-            vector=[0.1] * 384,  # Your embedding vector generated via cloud API
-            top_k=max_results,
-            include_metadata=True
-        )
-        
-        extracted_data = []
-        for match in raw_response.get("matches", []):
-            metadata = match.get("metadata", {})
-            extracted_data.append({
-                "source_document": metadata.get("filename", "Unknown File"),
-                "page": metadata.get("page_number", 1),
-                "text_content": metadata.get("text", "")
-            })
-            
-        return json.dumps(extracted_data, indent=2)
-        
+        results = vault.search_clauses(query, max_results=max_results)
+        return json.dumps(results, indent=2)
     except Exception as e:
-        return f"Cloud lookup database error: {str(e)}"
+        return f"Vault search error: {e}"
+
+
+@mcp.tool()
+def draft_clause(
+    instruction: str,
+    clause_type: str = "general",
+    tone: str = "formal",
+    reference_text: str = "",
+) -> str:
+    """
+    Draft a single contract clause with an LLM.
+
+    `instruction` describes what the clause needs to accomplish. `clause_type`
+    names the kind of clause (e.g. "indemnification", "limitation of liability").
+    `reference_text` is optional retrieved precedent (e.g. from
+    search_legal_vault) to ground the drafted language in.
+    """
+    try:
+        return llm.draft_clause(instruction, clause_type, tone, reference_text)
+    except Exception as e:
+        return f"Clause drafting error: {e}"
+
+
+@mcp.tool()
+def draft_legal_memo(
+    topic: str,
+    key_facts: str,
+    jurisdiction: str = "",
+    legal_questions: str = "",
+    research_context: str = "",
+) -> str:
+    """
+    Draft a structured legal research memo (Question Presented, Brief Answer,
+    Facts, Discussion, Conclusion) with an LLM.
+
+    `research_context` is optional retrieved material (e.g. from
+    search_legal_vault or outside research) to ground the analysis in.
+    """
+    try:
+        return llm.draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context)
+    except Exception as e:
+        return f"Memo drafting error: {e}"
+
+
+@mcp.tool()
+def summarize_document(document_text: str, focus: str = "key obligations, deadlines, and risks") -> str:
+    """
+    Summarize a legal document with an LLM, flagging obligations, deadlines,
+    and risks a reviewing attorney should not miss.
+    """
+    try:
+        return llm.summarize_document(document_text, focus)
+    except Exception as e:
+        return f"Summarization error: {e}"
+
 
 if __name__ == "__main__":
     mcp.run()
