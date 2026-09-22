@@ -1,50 +1,36 @@
-"""Local, offline text embedding via ONNX multilingual MiniLM.
+"""Text embedding via Voyage AI's hosted API.
 
-Runs entirely on-device (CPU, no PyTorch) so legal document text never has
-to leave the local machine in order to be embedded — only the resulting
-384-dim float vectors do. Shared by `embed_offline.py` (bulk ingestion) and
-`vault.py` (embedding a live search query).
+Originally this loaded an ONNX model in-process (optimum + transformers),
+but that pulled in a full ML stack heavy enough to OOM-kill the deployed
+container on first real use. Since this deployment already sends document
+text to the cloud (Pinecone) rather than keeping embedding strictly local,
+there's no remaining reason to pay that memory cost — a hosted embeddings
+API call is lighter and more reliable. voyage-law-2 is Voyage's
+legal-domain model, a good fit for this vault's contract/precedent text.
 """
 
-import numpy as np
-from optimum.onnxruntime import ORTModelForFeatureExtraction
-from transformers import AutoTokenizer
+import voyageai
 
 import config
 
-_tokenizer = None
-_model = None
+_client = None
 
 
-def _load():
-    global _tokenizer, _model
-    if _model is None:
-        _tokenizer = AutoTokenizer.from_pretrained(config.EMBEDDING_MODEL)
-        try:
-            _model = ORTModelForFeatureExtraction.from_pretrained(config.EMBEDDING_MODEL)
-        except Exception:
-            # Xenova's ONNX exports commonly live under an "onnx/" subfolder.
-            _model = ORTModelForFeatureExtraction.from_pretrained(config.EMBEDDING_MODEL, subfolder="onnx")
-    return _tokenizer, _model
+def _get_client():
+    global _client
+    if _client is None:
+        if not config.VOYAGE_API_KEY:
+            raise RuntimeError("VOYAGE_API_KEY is not set")
+        _client = voyageai.Client(api_key=config.VOYAGE_API_KEY)
+    return _client
 
 
-def _mean_pool(last_hidden_state: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
-    mask = attention_mask[..., None].astype(np.float32)
-    summed = (last_hidden_state * mask).sum(axis=1)
-    counts = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)
-    return summed / counts
-
-
-def embed_texts(texts: list) -> list:
-    """Embed a batch of texts locally. Returns one 384-dim unit vector per text."""
-    tokenizer, model = _load()
-    inputs = tokenizer(texts, padding=True, truncation=True, max_length=256, return_tensors="np")
-    outputs = model(**inputs)
-    pooled = _mean_pool(outputs.last_hidden_state, inputs["attention_mask"])
-    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
-    normalized = pooled / np.clip(norms, a_min=1e-9, a_max=None)
-    return normalized.tolist()
+def embed_texts(texts: list, input_type: str = "document") -> list:
+    """Embed a batch of texts. `input_type` is "document" when ingesting,
+    "query" when embedding a search query — Voyage optimizes each differently."""
+    result = _get_client().embed(texts, model=config.VOYAGE_MODEL, input_type=input_type)
+    return result.embeddings
 
 
 def embed_query(text: str) -> list:
-    return embed_texts([text])[0]
+    return embed_texts([text], input_type="query")[0]

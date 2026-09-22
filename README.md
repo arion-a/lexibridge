@@ -62,6 +62,8 @@ is present, the tool returns a clear error rather than failing silently.
 2. In the service's **Variables** tab, add:
    - `PINECONE_API_KEY`
    - `PINECONE_INDEX` (defaults to `legal-vault-index` if unset)
+   - `VOYAGE_API_KEY` (get one at **dash.voyageai.com** — used to embed
+     text; see the memory note below for why this replaced local embedding)
    - `ANTHROPIC_API_KEY` (optional server-wide fallback — leave unset if
      every caller will always pass their own `api_key`)
    - `ANTHROPIC_MODEL` (optional, defaults to `claude-sonnet-5`)
@@ -69,7 +71,24 @@ is present, the tool returns a clear error rather than failing silently.
 4. Your MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
 
 You'll also need a Pinecone index: at **app.pinecone.io**, create one with
-**384 dimensions** and **cosine** metric (must match the embedding model).
+**cosine** metric and a dimension count matching `VOYAGE_MODEL`'s output —
+**check Voyage AI's model docs for the exact number for whichever model
+you set** (it is not 384; that was only correct for the ONNX model this
+deployment no longer uses). Pinecone indexes can't change dimension after
+creation, so get this from Voyage's docs before creating the index rather
+than guessing.
+
+### Why embeddings moved to a hosted API
+
+The first deployment loaded an ONNX embedding model in-process
+(`optimum`/`transformers`), which pulled in enough of an ML stack to
+OOM-kill the Railway container the moment a tool actually tried to embed
+text — `ingest_document`/`search_legal_vault` would return an empty
+response and silently restart the whole server. Since this deployment
+already sends document text to Pinecone rather than keeping it strictly
+local, there was no remaining benefit to paying that memory cost, so
+embedding now goes through Voyage AI's API (`voyage-law-2`, a legal-domain
+model) instead of running in-process.
 
 ## Connect an MCP client
 

@@ -10,8 +10,10 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 
-# Embedding model (ONNX, runs on-device inside this container — no API key).
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "Xenova/paraphrase-multilingual-MiniLM-L12-v2")
+# Voyage AI — hosted embeddings (avoids loading a local ML stack that
+# OOM-killed the container). voyage-law-2 is a legal-domain model.
+VOYAGE_API_KEY = os.environ.get("VOYAGE_API_KEY")
+VOYAGE_MODEL = os.environ.get("VOYAGE_MODEL", "voyage-law-2")
 
 # Default folder embed_offline.py looks in for a local bulk-ingest run.
 # Not used by the ingest_document MCP tool, which takes text directly.
