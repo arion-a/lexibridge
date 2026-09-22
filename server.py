@@ -51,27 +51,13 @@ def ingest_document(source_document: str, text: str) -> str:
 
 
 @mcp.tool()
-def configure_llm(api_key: str, model: str = "") -> str:
-    """
-    Choose which Anthropic API key and Claude model draft_clause,
-    draft_legal_memo, and summarize_document use for the rest of this
-    session. `model` is optional — omit it to keep the server's default
-    model.
-
-    Caution: this server runs as a single shared process. If more than one
-    client connects to the same deployment, configure_llm's choice is
-    process-wide, not per-connection — a later call from any client can
-    change which key/model everyone's drafting calls use.
-    """
-    return llm.configure(api_key, model)
-
-
-@mcp.tool()
 def draft_clause(
     instruction: str,
     clause_type: str = "general",
     tone: str = "formal",
     reference_text: str = "",
+    api_key: str = "",
+    model: str = "",
 ) -> str:
     """
     Draft a single contract clause with an LLM.
@@ -81,11 +67,12 @@ def draft_clause(
     `reference_text` is optional retrieved precedent (e.g. from
     search_legal_vault) to ground the drafted language in.
 
-    Uses whichever API key/model was set via configure_llm, or the server's
-    default if configure_llm hasn't been called.
+    `api_key` is your own Anthropic API key (falls back to the server's
+    ANTHROPIC_API_KEY if omitted — ask whoever runs this deployment whether
+    one is set). `model` optionally picks which Claude model to use.
     """
     try:
-        return llm.draft_clause(instruction, clause_type, tone, reference_text)
+        return llm.draft_clause(instruction, clause_type, tone, reference_text, api_key=api_key, model=model)
     except Exception as e:
         return f"Clause drafting error: {e}"
 
@@ -97,6 +84,8 @@ def draft_legal_memo(
     jurisdiction: str = "",
     legal_questions: str = "",
     research_context: str = "",
+    api_key: str = "",
+    model: str = "",
 ) -> str:
     """
     Draft a structured legal research memo (Question Presented, Brief Answer,
@@ -105,26 +94,35 @@ def draft_legal_memo(
     `research_context` is optional retrieved material (e.g. from
     search_legal_vault or outside research) to ground the analysis in.
 
-    Uses whichever API key/model was set via configure_llm, or the server's
-    default if configure_llm hasn't been called.
+    `api_key` is your own Anthropic API key (falls back to the server's
+    ANTHROPIC_API_KEY if omitted). `model` optionally picks which Claude
+    model to use.
     """
     try:
-        return llm.draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context)
+        return llm.draft_legal_memo(
+            topic, key_facts, jurisdiction, legal_questions, research_context, api_key=api_key, model=model
+        )
     except Exception as e:
         return f"Memo drafting error: {e}"
 
 
 @mcp.tool()
-def summarize_document(document_text: str, focus: str = "key obligations, deadlines, and risks") -> str:
+def summarize_document(
+    document_text: str,
+    focus: str = "key obligations, deadlines, and risks",
+    api_key: str = "",
+    model: str = "",
+) -> str:
     """
     Summarize a legal document with an LLM, flagging obligations, deadlines,
     and risks a reviewing attorney should not miss.
 
-    Uses whichever API key/model was set via configure_llm, or the server's
-    default if configure_llm hasn't been called.
+    `api_key` is your own Anthropic API key (falls back to the server's
+    ANTHROPIC_API_KEY if omitted). `model` optionally picks which Claude
+    model to use.
     """
     try:
-        return llm.summarize_document(document_text, focus)
+        return llm.summarize_document(document_text, focus, api_key=api_key, model=model)
     except Exception as e:
         return f"Summarization error: {e}"
 

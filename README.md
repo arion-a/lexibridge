@@ -26,32 +26,33 @@ and it can be split apart again.
 - `ingest_document(source_document, text)` — chunks and embeds `text` and
   stores it in the vault. This is how you populate the vault: no local
   files needed, just call this tool with a document's contents.
-- `configure_llm(api_key, model="")` — set which Anthropic API key (and
-  optionally which Claude model) the three drafting tools below use for
-  the rest of this session. See the caution below.
-- `draft_clause(instruction, clause_type, tone, reference_text)` — drafts a
-  single contract clause with an LLM, optionally grounded in retrieved
-  precedent.
-- `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context)`
+- `draft_clause(instruction, clause_type, tone, reference_text, api_key, model)`
+  — drafts a single contract clause with an LLM, optionally grounded in
+  retrieved precedent.
+- `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context, api_key, model)`
   — drafts a structured legal research memo (Question Presented, Brief
   Answer, Facts, Discussion, Conclusion).
-- `summarize_document(document_text, focus)` — summarizes a legal document,
-  flagging obligations, deadlines, and risks.
+- `summarize_document(document_text, focus, api_key, model)` — summarizes a
+  legal document, flagging obligations, deadlines, and risks.
 
 A typical flow: `ingest_document` to populate the vault, `search_legal_vault`
 to pull relevant precedent, then feed the results into `draft_clause` or
 `draft_legal_memo` as `reference_text` / `research_context` so the drafted
 language is grounded in prior work.
 
-### Caution: `configure_llm` is process-wide, not per-connection
+### Bring your own key
 
-This server runs as one shared container. If more than one MCP client
-connects to the same deployment, `configure_llm` changes the key/model for
-*everyone* currently using that deployment, not just the caller — there is
-no per-user isolation. Fine for a single person's own deployment; not safe
-if you expect multiple people to share one deployed instance concurrently.
-If that's your situation, say so and the drafting tools can go back to
-taking `api_key`/`model` as arguments on every call instead.
+This server runs as **one shared container**, so `api_key` is a
+per-call argument on the three drafting tools rather than something set
+once for a session — that keeps different people's Anthropic accounts
+from leaking into each other's requests when multiple clients use the
+same deployment. Each call:
+```json
+{ "instruction": "...", "api_key": "sk-ant-...", "model": "claude-opus-5" }
+```
+`model` is optional. If a call omits `api_key`, it falls back to the
+server's `ANTHROPIC_API_KEY` (if the deployment has one set) — if neither
+is present, the tool returns a clear error rather than failing silently.
 
 ## Deploy (Railway)
 
@@ -61,7 +62,8 @@ taking `api_key`/`model` as arguments on every call instead.
 2. In the service's **Variables** tab, add:
    - `PINECONE_API_KEY`
    - `PINECONE_INDEX` (defaults to `legal-vault-index` if unset)
-   - `ANTHROPIC_API_KEY` (optional — omit if you'll always call `configure_llm`)
+   - `ANTHROPIC_API_KEY` (optional server-wide fallback — leave unset if
+     every caller will always pass their own `api_key`)
    - `ANTHROPIC_MODEL` (optional, defaults to `claude-sonnet-5`)
 3. **Settings → Networking → Generate Domain** to get a public URL.
 4. Your MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
