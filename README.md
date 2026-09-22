@@ -70,13 +70,15 @@ is present, the tool returns a clear error rather than failing silently.
 3. **Settings → Networking → Generate Domain** to get a public URL.
 4. Your MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
 
-You'll also need a Pinecone index: at **app.pinecone.io**, create one with
-**cosine** metric and a dimension count matching `VOYAGE_MODEL`'s output —
-**check Voyage AI's model docs for the exact number for whichever model
-you set** (it is not 384; that was only correct for the ONNX model this
-deployment no longer uses). Pinecone indexes can't change dimension after
-creation, so get this from Voyage's docs before creating the index rather
-than guessing.
+No manual Pinecone dashboard step needed — `vault.py` creates the index
+itself (cosine metric, 1024 dimensions to match `voyage-law-2`'s fixed
+output) the first time `ingest_document` or `search_legal_vault` runs, if
+`PINECONE_INDEX` doesn't already exist. If you point `VOYAGE_MODEL` at a
+different model with a different output size, or if an index with that
+name already exists at the wrong dimension, the tool call fails with an
+error naming the exact mismatch and a one-line fix (delete the index —
+Pinecone won't let its dimension change in place — and the next call
+recreates it correctly).
 
 ### Why embeddings moved to a hosted API
 
