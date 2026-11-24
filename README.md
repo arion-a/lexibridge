@@ -1,100 +1,63 @@
 # lexibridge
 
-An MCP (Model Context Protocol) server that speeds up legal research and
-drafting by giving LLM clients (Claude Desktop, Claude Code, etc.) tools to
-search a legal vault and draft clauses, memos, and summaries.
+**An MCP server that lets an LLM client search a vault of legal documents and draft clauses, memos and summaries, optionally grounded in the retrieved text.**
 
-Runs as a single container, deployed to the cloud (Railway) — embedding,
-vault storage/search, and drafting all happen inside that one process.
-There is no local machine or repo checkout required to use it day to day:
-connect an MCP client to the deployed URL and call its tools directly.
+MCP (Model Context Protocol) is the standard that lets clients such as Claude Desktop call external tools. lexibridge exposes five tools. Once the server is deployed, a client only needs its URL.
 
-**Note on `SPECIFICATION.md`:** that document describes a different design
-— local on-device embedding with only vectors crossing to a cloud vector
-store, so raw text never leaves your machine. This deployment deliberately
-collapses that into one cloud container instead (by explicit choice, for
-simplicity of a fully-hosted setup with nothing to install locally). The
-tradeoff: document text now lives in Pinecone, not only on a local
-machine. If you want the original zero-text-exposure design back, say so
-and it can be split apart again.
+![lexibridge architecture](docs/img/architecture.svg)
 
 ## Tools
 
-- `search_legal_vault(query, max_results=4)` — semantic search over the
-  vault for passages relevant to `query`. Returns JSON:
-  `{source_document, page, text_content, relevance_score}`.
-- `ingest_document(source_document, text)` — chunks and embeds `text` and
-  stores it in the vault. This is how you populate the vault: no local
-  files needed, just call this tool with a document's contents.
-- `draft_clause(instruction, clause_type, tone, reference_text, api_key, model)`
-  — drafts a single contract clause with an LLM, optionally grounded in
-  retrieved precedent.
-- `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context, api_key, model)`
-  — drafts a structured legal research memo (Question Presented, Brief
-  Answer, Facts, Discussion, Conclusion).
-- `summarize_document(document_text, focus, api_key, model)` — summarizes a
-  legal document, flagging obligations, deadlines, and risks.
+| Tool | What it does |
+| --- | --- |
+| `ingest_document(source_document, text)` | Splits `text` into chunks of about 800 characters, cutting only at sentence ends (English and Hindi sentence terminators are recognised), embeds each chunk and stores it in the vault. Returns the number of chunks stored. |
+| `search_legal_vault(query, max_results=4)` | Embeds `query` and returns the `max_results` closest chunks as JSON: `source_document`, `page`, `text_content`, `relevance_score`. `page` is the chunk's position in the document, counted from 1. It is not a printed page number. |
+| `draft_clause(instruction, clause_type, tone, reference_text, api_key, model)` | Drafts one contract clause. Defaults: `clause_type="general"`, `tone="formal"`. `reference_text` is optional precedent to ground the clause. |
+| `draft_legal_memo(topic, key_facts, jurisdiction, legal_questions, research_context, api_key, model)` | Drafts a memo with the headings Question Presented, Brief Answer, Facts, Discussion, Conclusion. |
+| `summarize_document(document_text, focus, api_key, model)` | Summarizes a document. Default `focus`: "key obligations, deadlines, and risks". |
 
-A typical flow: `ingest_document` to populate the vault, `search_legal_vault`
-to pull relevant precedent, then feed the results into `draft_clause` or
-`draft_legal_memo` as `reference_text` / `research_context` so the drafted
-language is grounded in prior work.
+**Typical flow:** call `ingest_document` to fill the vault, `search_legal_vault` to find precedent, then pass the returned text to a drafting tool as `reference_text` or `research_context`.
 
-### Bring your own key
+## Where your text goes
 
-This server runs as **one shared container**, so `api_key` is a
-per-call argument on the three drafting tools rather than something set
-once for a session — that keeps different people's Anthropic accounts
-from leaking into each other's requests when multiple clients use the
-same deployment. Each call:
-```json
-{ "instruction": "...", "api_key": "sk-ant-...", "model": "claude-opus-5" }
-```
-`model` is optional. If a call omits `api_key`, it falls back to the
-server's `ANTHROPIC_API_KEY` (if the deployment has one set) — if neither
-is present, the tool returns a clear error rather than failing silently.
+lexibridge runs as one cloud container. Text is **not** kept only on your machine:
 
-## Deploy (Railway)
+| Step | What is sent | To |
+| --- | --- | --- |
+| `ingest_document` | every chunk of the document | Voyage AI (to embed), then Pinecone (stored with its vector) |
+| `search_legal_vault` | the query | Voyage AI (to embed), then Pinecone (to find matches) |
+| `draft_clause`, `draft_legal_memo`, `summarize_document` | all arguments of the call, including `reference_text`, `research_context` and `document_text` | Anthropic API |
 
-1. **railway.app** → **New Project → Deploy from GitHub repo** → pick this
-   repo and the branch you're working on. Railway detects the `Dockerfile`
-   and builds it automatically.
-2. In the service's **Variables** tab, add:
-   - `PINECONE_API_KEY`
-   - `PINECONE_INDEX` (defaults to `legal-vault-index` if unset)
-   - `VOYAGE_API_KEY` (get one at **dash.voyageai.com** — used to embed
-     text; see the memory note below for why this replaced local embedding)
-   - `ANTHROPIC_API_KEY` (optional server-wide fallback — leave unset if
-     every caller will always pass their own `api_key`)
-   - `ANTHROPIC_MODEL` (optional, defaults to `claude-sonnet-5`)
-3. **Settings → Networking → Generate Domain** to get a public URL.
-4. Your MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
+`SPECIFICATION.md` describes a different design in which embedding runs on the user's machine and only vectors leave it. This deployment does not implement that design.
 
-No manual Pinecone dashboard step needed — `vault.py` creates the index
-itself (cosine metric, 1024 dimensions to match `voyage-law-2`'s fixed
-output) the first time `ingest_document` or `search_legal_vault` runs, if
-`PINECONE_INDEX` doesn't already exist. If you point `VOYAGE_MODEL` at a
-different model with a different output size, or if an index with that
-name already exists at the wrong dimension, the tool call fails with an
-error naming the exact mismatch and a one-line fix (delete the index —
-Pinecone won't let its dimension change in place — and the next call
-recreates it correctly).
+## Security notes
 
-### Why embeddings moved to a hosted API
+- **The server has no authentication of its own.** Anyone who knows the `/mcp` URL can call every tool, including reading and writing the vault.
+- If the deployment sets `ANTHROPIC_API_KEY`, any caller who omits `api_key` uses that key and its quota. Leave it unset if every caller should supply their own.
+- Treat the URL as a secret, or put the service behind your own access control.
 
-The first deployment loaded an ONNX embedding model in-process
-(`optimum`/`transformers`), which pulled in enough of an ML stack to
-OOM-kill the Railway container the moment a tool actually tried to embed
-text — `ingest_document`/`search_legal_vault` would return an empty
-response and silently restart the whole server. Since this deployment
-already sends document text to Pinecone rather than keeping it strictly
-local, there was no remaining benefit to paying that memory cost, so
-embedding now goes through Voyage AI's API (`voyage-law-2`, a legal-domain
-model) instead of running in-process.
+## Quick start
 
-## Connect an MCP client
+### Deploy to Railway
+1. In Railway choose **New Project, Deploy from GitHub repo** and select this repository. Railway detects the `Dockerfile`.
+2. In the service **Variables** tab set:
 
-For Claude Desktop (or any client supporting remote MCP servers), add:
+   | Variable | Required | Default and purpose |
+   | --- | --- | --- |
+   | `PINECONE_API_KEY` | yes | Access to the vector store |
+   | `VOYAGE_API_KEY` | yes | Access to the embedding API |
+   | `PINECONE_INDEX` | no | `legal-vault-index` |
+   | `VOYAGE_MODEL` | no | `voyage-law-2` |
+   | `ANTHROPIC_API_KEY` | no | Server-wide fallback key for the drafting tools |
+   | `ANTHROPIC_MODEL` | no | `claude-sonnet-5` |
+
+3. Under **Settings, Networking** generate a domain. The MCP endpoint is `https://<your-app>.up.railway.app/mcp`.
+
+The server creates the Pinecone index on first use (serverless, AWS `us-east-1`, cosine metric, 1024 dimensions). If an index with that name already exists with a different dimension, the call fails with an error that names both dimensions and says to delete the index so it can be recreated.
+
+### Connect a client
+Add this to the MCP client's configuration:
+
 ```json
 {
   "mcpServers": {
@@ -105,28 +68,53 @@ For Claude Desktop (or any client supporting remote MCP servers), add:
 }
 ```
 
-Then call `ingest_document` a few times to populate the vault, and the
-other tools are ready to use.
-
-## Local Docker testing (optional)
+### Run locally with Docker
+`server.py` serves HTTP only when the `PORT` environment variable is set. Without it, the server runs over stdio for a client that launches it directly.
 
 ```bash
-cp .env.example .env   # fill in PINECONE_API_KEY at minimum
+cp .env.example .env   # set PINECONE_API_KEY and VOYAGE_API_KEY at minimum
 docker build -t lexibridge .
-docker run --env-file .env -p 8000:8000 lexibridge
+docker run --env-file .env -e PORT=8000 -p 8000:8000 lexibridge
 ```
 
-## Optional: bulk-ingest a local folder
+The endpoint is then `http://localhost:8000/mcp`.
 
-If you do have a folder of documents on whatever machine you're running
-this from, `embed_offline.py` walks it and calls the same ingestion path
-as `ingest_document`:
+### Bulk-ingest a local folder (optional)
+
 ```bash
 python embed_offline.py --vault-dir ./legal_vault
 ```
-Not required — most setups can just call the `ingest_document` MCP tool
-directly instead.
 
-**Disclaimer:** output is a drafting aid, not legal advice — a licensed
-attorney should review anything generated here before it's relied on or
-filed.
+This walks the folder recursively and ingests every `.txt` and `.md` file through the same path as `ingest_document`. The default folder is `./legal_vault`, set by `LEGAL_VAULT_DIR`.
+
+## Bring your own Anthropic key
+
+The three drafting tools take an optional `api_key` argument. Because one container serves many callers, the key travels with each call, so different callers' Anthropic accounts are never mixed. `model` is also optional.
+
+```json
+{ "instruction": "...", "api_key": "<your Anthropic API key>" }
+```
+
+If a call omits `api_key`, the server uses its `ANTHROPIC_API_KEY`. If neither exists, the tool returns an error saying so.
+
+## Why embeddings use a hosted API
+
+An earlier version loaded an ONNX embedding model inside the server process. That pulled in an ML stack large enough to run the Railway container out of memory on first use. Because text already goes to Pinecone, in-process embedding no longer kept text local, so embedding now goes through Voyage AI.
+
+## Repository map
+
+| File | Purpose |
+| --- | --- |
+| `server.py` | FastMCP server and the five tools |
+| `vault.py` | Pinecone index creation, ingestion, search |
+| `chunking.py` | Sentence-aware chunking (target 800 characters, minimum 200 before a split) |
+| `embedding.py` | Voyage AI embedding calls |
+| `llm.py` | Anthropic calls for the drafting tools |
+| `config.py` | Environment variables and defaults |
+| `embed_offline.py` | Optional bulk ingestion of a local folder |
+| `Dockerfile`, `requirements.txt`, `.env.example` | Container and configuration |
+| `SPECIFICATION.md` | An earlier, different design (local embedding), kept for reference |
+
+## Disclaimer
+
+Output is a drafting aid, not legal advice. A licensed attorney should review anything generated here before it is relied on or filed.
